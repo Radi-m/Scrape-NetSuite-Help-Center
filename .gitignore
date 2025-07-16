@@ -1,0 +1,14 @@
+secret.py
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.env
+*.DS_Store
+*.bak
+*.swp
+*.tmp
+*.json
