@@ -19,7 +19,7 @@ SECURITY_SUBMIT_BUTTON_LOCATOR = (By.NAME, 'submitter')
 NETSUITE_LOGIN_PAGE = 'https://system.netsuite.com/pages/customerlogin.jsp'
 HELP_CENTER_URL = 'https://5025918-sb1.app.netsuite.com/app/help/helpcenter.nl'
 
-OUTPUT_FILE = 'netsuite_suitescript_docs.md'
+OUTPUT_FILE = 'netsuite_suitescript_docs.html'
 DRIVER_PATH = './chromedriver.exe'
 
 # --- SCRAPE SUBJECT ---
@@ -72,8 +72,8 @@ def login_and_get_session(driver):
 
 def get_all_documentation_links(driver, base_url):
     """
-    Traverses a path, expands sub-nodes, and uses a robust "Find, Scroll, Click"
-    pattern to collect leaf node links, avoiding both stale and visibility issues.
+    Traverses a path, expands all sub-nodes, and uses a robust "Find, Scroll, Click"
+    pattern to collect leaf node links, gracefully skipping non-clickable labels.
     """
     print(f"Navigating to Help Center: {HELP_CENTER_URL}")
     driver.get(HELP_CENTER_URL)
@@ -83,7 +83,6 @@ def get_all_documentation_links(driver, base_url):
     print(f"Starting traversal for path: {path_parts}")
 
     try:
-        # --- Path traversal logic remains the same, it is working well ---
         search_context = driver
         for i, part in enumerate(path_parts):
             print(f"  -> Traversing to: '{part}'")
@@ -120,35 +119,30 @@ def get_all_documentation_links(driver, base_url):
                 print("Caught expected StaleElementReferenceException, re-scanning tree...")
                 continue
         
-        # --- START OF THE CRITICAL FIX ---
-        
-        # STAGE 1: Collect stable identifiers (IDs). This part is correct.
         print("Collecting all leaf node IDs from the target sub-tree...")
         leaf_node_spans = final_target_container.find_elements(By.XPATH, ".//span[@isfolder='0']")
         leaf_node_ids = [span.get_attribute('id') for span in leaf_node_spans if span.get_attribute('id')]
         total_leaves = len(leaf_node_ids)
-        print(f"Found {total_leaves} leaf node IDs to scrape.")
+        print(f"Found {total_leaves} leaf node IDs to process.")
         all_links = []
         
-        # STAGE 2: Loop through the IDs and apply the "Find, Scroll, Click" pattern.
         for i, node_id in enumerate(leaf_node_ids):
             try:
-                # STEP 1: FIND - Wait only for presence, not clickability.
+                # Find the element but don't fail immediately if it's not clickable
                 node = wait.until(EC.presence_of_element_located((By.ID, node_id)))
-
-                # STEP 2: SCROLL - Use JavaScript to bring the element into view.
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", node)
-                # Add a tiny pause to ensure scrolling is complete before the next action.
-                time.sleep(0.2) 
-
-                # Now that it's in view, we can safely get its text.
+                
+                # Check if the node has an onclick handler, which is a good sign it's a real link
+                if not node.get_attribute('onclick'):
+                    print(f"  ({i+1}/{total_leaves}) Skipping '{node.text}' (not a clickable link).")
+                    continue
+                
                 title = node.text
                 print(f"  ({i+1}/{total_leaves}) Processing: {title}")
+
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", node)
+                time.sleep(0.2)
                 
-                # STEP 3: CLICK - Use the reliable JavaScript click.
                 driver.execute_script("arguments[0].click();", node)
-                
-                # Wait for the result of the click.
                 wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
                 
                 current_url = driver.current_url
@@ -156,10 +150,12 @@ def get_all_documentation_links(driver, base_url):
                     all_links.append(current_url)
 
             except Exception as e:
-                # The error message now uses the ID, which is more reliable.
-                print(f"Could not process leaf node with ID '{node_id}'. Error: {e}")
+                try:
+                    node_text = driver.find_element(By.ID, node_id).text
+                    print(f"  WARNING: Could not process node '{node_text}' with ID '{node_id}'. It might be a text label. Skipping. Error: {type(e).__name__}")
+                except:
+                     print(f"  WARNING: Could not process node with ID '{node_id}'. Skipping. Error: {type(e).__name__}")
 
-        # --- END OF THE CRITICAL FIX ---
 
         print(f"\nCollected {len(all_links)} unique documentation pages from '{SUBJECT_TO_SCRAPE}'.")
         return all_links
@@ -168,14 +164,17 @@ def get_all_documentation_links(driver, base_url):
         print(f"An unexpected error occurred during link extraction: {e}")
         traceback.print_exc()
         return []
-            
-def scrape_content_and_save(driver, links):
-    """Visits each link from the provided list, scrapes its content, and saves it to a markdown file."""
+                
+
+    """
+    Visits each link, scrapes its content, converts it to clean Markdown,
+    and saves it to a file. Gracefully handles pages without a navigation tree.
+    """
     if not links:
         print("No links were found to scrape.")
         return
 
-    print(f"Starting to scrape {len(links)} pages...")
+    print(f"Starting to scrape and format {len(links)} pages...")
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         for i, link in enumerate(links):
             print(f"Scraping ({i+1}/{len(links)}): {link}")
@@ -184,22 +183,168 @@ def scrape_content_and_save(driver, links):
                 content_div = WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located((By.ID, 'helpcenter_content'))
                 )
-                soup = BeautifulSoup(content_div.get_attribute('outerHTML'), 'html.parser') # type: ignore
-                
+                soup = BeautifulSoup(content_div.get_attribute('outerHTML'), 'html.parser')
+
                 title_element = soup.find('h1', class_='nshelp_title')
-                title = title_element.get_text(strip=True) if title_element else driver.title.replace('NetSuite Help Center - ', '')
-                content_text = soup.get_text(separator='\n', strip=True)
+                title = title_element.get_text(strip=True) if title_element else "Untitled"
                 
+                # --- START OF THE CRITICAL FIX for NoSuchElementException ---
+                path_text = ""
+                try:
+                    # Try to find the navigation breadcrumbs, but don't fail if it's not there.
+                    nav_div = driver.find_element(By.ID, 'ns_navigation')
+                    path_text = nav_div.text.replace('\n', ' > ')
+                except NoSuchElementException:
+                    print("  (Info: No navigation breadcrumbs found on this page. Continuing without it.)")
+                # --- END OF THE CRITICAL FIX ---
+                
+                markdown_content = convert_html_to_markdown(soup)
+
                 f.write(f"# {title}\n\n")
                 f.write(f"**Source URL:** <{link}>\n\n")
-                f.write(f"{content_text}\n\n---\n\n")
+                if path_text:
+                    f.write(f"**Path:** `{path_text}`\n\n")
+                f.write(markdown_content)
+                f.write("\n\n---\n\n")
+            
             except Exception as e:
-                print(f"Could not scrape page {link}. Error: {e}")
+                print(f"  ERROR: Could not scrape page {link}. Error: {e}")
+                traceback.print_exc()
                 f.write(f"# Failed to scrape content from {link}\n\n---\n\n")
                 
-    print(f"Scraping complete. Content saved to '{OUTPUT_FILE}'.")
+    print(f"Scraping complete. Formatted content saved to '{OUTPUT_FILE}'.")
+    
+# --- FINAL VERSION WITH CSS RESET FOR CODE SNIPPETS ---
+def scrape_content_and_save(driver, links):
+    """
+    Visits each link, extracts its clean HTML content, and appends it as a
+    semantically distinct <article> to a single, well-structured HTML file.
+    Includes a CSS reset to fix code snippet rendering.
+    """
+    if not links:
+        print("No links were found to scrape.")
+        return
 
+    print(f"Starting to build single HTML output from {len(links)} pages...")
+    
+    html_header = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetSuite SuiteScript Documentation</title>
+    <style>
+        /* General Body Styles */
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }}
+        
+        /* Scraped Content Containers */
+        .scraped-page {{ border: 1px solid #ddd; border-radius: 8px; margin-bottom: 40px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+        .scraped-page.error {{ border-color: #d9534f; background-color: #f2dede; }}
+        .metadata {{ background-color: #f7f7f7; border: 1px solid #eee; padding: 10px; margin-bottom: 20px; border-radius: 4px; }}
+        .metadata p {{ margin: 5px 0; }}
+        .content-snippet {{ margin-top: 20px; }}
 
+        /* Typography */
+        h1 {{ color: #1a0dab; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+        
+        /* Tables */
+        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }}
+        th {{ background-color: #f2f2f2; }}
+
+        /* --- START OF THE FIX for Code Snippets --- */
+        /* General code styles */
+        code {{ font-family: "Courier New", Courier, monospace; }}
+
+        /* Style for <pre> blocks (the whole code box) */
+        pre, pre[class*="language-"] {{
+            background-color: #f5f2f0 !important; /* A light, readable background */
+            color: #333; /* Dark text for readability */
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            overflow-x: auto;
+            border: 1px solid #ddd;
+        }}
+
+        /* CSS Reset for SPANs inside code blocks */
+        /* This forces the syntax highlighting spans to inherit our desired text color */
+        pre[class*="language-"] span, pre code span {{
+            background: none !important; /* Remove any background color from tokens */
+            color: inherit !important; /* Make text color inherit from the <pre> tag */
+            text-shadow: none !important;
+        }}
+        /* --- END OF THE FIX --- */
+    </style>
+</head>
+<body>
+    <h1>Scraped NetSuite Documentation</h1>
+    <p>Generated on: {now}</p>
+"""
+
+    html_footer = """
+</body>
+</html>
+"""
+
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        from datetime import datetime
+        f.write(html_header.format(now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+        for i, link in enumerate(links):
+            print(f"Scraping ({i+1}/{len(links)}): {link}")
+            try:
+                driver.get(link)
+                wait = WebDriverWait(driver, 20)
+                wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
+                
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+                title_element = soup.find('h1', class_='nshelp_title')
+                title = title_element.get_text(strip=True) if title_element else "Untitled"
+                
+                path_text = ""
+                try:
+                    nav_div = soup.find(id='ns_navigation')
+                    if nav_div:
+                        path_text = nav_div.get_text(separator=' > ', strip=True)
+                except Exception:
+                    print("  (Info: No navigation breadcrumbs found.)")
+
+                content_html = ""
+                content_div = soup.find('div', class_='nshelp_page')
+                if not content_div:
+                    content_div = soup.find('div', class_='nshelp_content')
+                
+                if content_div:
+                    for element in content_div.find_all(id=["nshelp_footer", "helpcenter_feedback"], class_=["nshelp_navheader"]):
+                        element.decompose()
+                    content_html = content_div.prettify()
+                else:
+                    content_html = "<p>Error: Could not find main content div.</p>"
+
+                f.write('<article class="scraped-page">\n')
+                f.write(f'<h1>{title}</h1>\n')
+                f.write('<div class="metadata">\n')
+                f.write(f'<p><strong>Source URL:</strong> <a href="{link}" target="_blank">{link}</a></p>\n')
+                if path_text:
+                    f.write(f'<p><strong>Path:</strong> <code>{path_text}</code></p>\n')
+                f.write('</div>\n<hr>\n')
+                f.write('<div class="content-snippet">\n')
+                f.write(content_html)
+                f.write('</div>\n')
+                f.write('</article>\n\n')
+            
+            except Exception as e:
+                print(f"  ERROR: Could not process page {link}. Writing error to file.")
+                traceback.print_exc()
+                f.write(f'<article class="scraped-page error"><h1>Failed to scrape: {link}</h1><p>Error: {e}</p></article>\n')
+                
+        f.write(html_footer)
+
+    print(f"\nScraping complete. All content saved to '{OUTPUT_FILE}'")    
+        
 if __name__ == '__main__':
     service = webdriver.ChromeService(executable_path=DRIVER_PATH)
     driver = webdriver.Chrome(service=service)
