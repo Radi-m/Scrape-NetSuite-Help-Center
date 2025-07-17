@@ -23,8 +23,8 @@ OUTPUT_FILE = 'netsuite_suitescript_docs.md'
 DRIVER_PATH = './chromedriver.exe'
 
 # --- SCRAPE SUBJECT ---
-# Format: 'MainTitle/SubTitle' (e.g., 'SuiteCloud Platform/SuiteScript')
-SUBJECT_TO_SCRAPE = 'SuiteCloud Platform/SuiteScript'
+# Format: 'MainTitle|SubTitle' (e.g., 'SuiteCloud Platform|SuiteScript')
+SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x API Reference|SuiteScript 2.x Modules|N/action Module'
 
 def login_and_get_session(driver):
     """Logs into NetSuite, handling the security question page if it appears."""
@@ -70,91 +70,85 @@ def login_and_get_session(driver):
         print(f"An unexpected error occurred during login: {e}")
         return False
 
-# --- REVISED AND TARGETED FUNCTION ---
-
 def get_all_documentation_links(driver, base_url):
     """
-    Traverses a specific path (e.g., 'A/B/C'), then expands all sub-nodes
-    under the final node 'C' and collects all of its leaf node links.
+    Traverses a path, expands sub-nodes, and uses a robust "Find, Scroll, Click"
+    pattern to collect leaf node links, avoiding both stale and visibility issues.
     """
     print(f"Navigating to Help Center: {HELP_CENTER_URL}")
     driver.get(HELP_CENTER_URL)
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 10)
 
-    # You can now use deeper paths, for example:
-    # SUBJECT_TO_SCRAPE = 'SuiteCloud Platform/SuiteScript/SuiteScript 2.x API Reference'
-    path_parts = SUBJECT_TO_SCRAPE.split('/')
+    path_parts = SUBJECT_TO_SCRAPE.split('|')
     print(f"Starting traversal for path: {path_parts}")
 
     try:
-        # Start the search from the top of the document
+        # --- Path traversal logic remains the same, it is working well ---
         search_context = driver
-
-        # Step 1: Traverse the provided path, expanding as we go
         for i, part in enumerate(path_parts):
             print(f"  -> Traversing to: '{part}'")
-
-            # Find the text span for the current part of the path within the current context.
-            # The .// is crucial: it means "search within the current context's descendants".
-            # We wait for it to be visible before proceeding.
             node_text_span = wait.until(EC.visibility_of_element_located(
                 (By.XPATH, f".//span[@isfolder='1' and text()='{part}']")
             ))
-
-            # Find the container of this node. This will be our new search context.
             node_container = node_text_span.find_element(By.XPATH, "./ancestor::span[1]")
-
-            # Now, check if this node needs to be expanded.
+            node_id = node_container.get_attribute('id')
             try:
-                # Find the expand/collapse image within this node's row
                 expand_img = node_container.find_element(By.XPATH, ".//img[contains(@id, '_ti')]")
                 if 'plus.png' in expand_img.get_attribute('src'):
                     print(f"     Expanding '{part}'...")
                     driver.execute_script("arguments[0].click();", expand_img)
-                    time.sleep(2) # Wait for children to be loaded into the DOM
+                    child_container_locator = (By.ID, f"{node_id}_c")
+                    wait.until(EC.presence_of_element_located(child_container_locator))
+                    print(f"     Expansion of '{part}' confirmed.")
             except NoSuchElementException:
-                # This node might be a leaf or doesn't have an expand icon. We can ignore it.
                 print(f"     '{part}' has no expand icon. Continuing.")
-                pass
-
-            # Update the search context to the container of the node we just found.
-            # The next iteration will only search inside this container.
             search_context = node_container
-            print(f"     Set new search context to element with ID: {search_context.get_attribute('id')}")
+            print(f"     Set new search context to element with ID: {node_id}")
 
-        # Step 2: Now that we are at our target, expand all of its children
         print("\nTraversal complete. Force-expanding all nodes under the final target.")
         final_target_container = search_context
-        
         while True:
-            # Find all visible "plus" icons WITHIN our final target container
             plus_icons = final_target_container.find_elements(By.XPATH, ".//img[contains(@src, 'plus.png')]")
-
             if not plus_icons:
                 print("Expansion of sub-tree is complete.")
                 break
-
             print(f"Found {len(plus_icons)} more nodes to expand. Clicking first one...")
             try:
-                # Click the first available icon. The loop will restart and find new ones.
                 driver.execute_script("arguments[0].click();", plus_icons[0])
-                time.sleep(1) # Wait for UI to update
+                time.sleep(0.5)
             except StaleElementReferenceException:
                 print("Caught expected StaleElementReferenceException, re-scanning tree...")
                 continue
         
-        # Step 3: Collect all leaf nodes (isfolder="0") from the final container
-        print("Collecting all leaf node links from the target sub-tree...")
-        leaf_nodes = final_target_container.find_elements(By.XPATH, ".//span[@isfolder='0']")
-        total_leaves = len(leaf_nodes)
-        print(f"Found {total_leaves} leaf nodes to scrape.")
+        # --- START OF THE CRITICAL FIX ---
+        
+        # STAGE 1: Collect stable identifiers (IDs). This part is correct.
+        print("Collecting all leaf node IDs from the target sub-tree...")
+        leaf_node_spans = final_target_container.find_elements(By.XPATH, ".//span[@isfolder='0']")
+        leaf_node_ids = [span.get_attribute('id') for span in leaf_node_spans if span.get_attribute('id')]
+        total_leaves = len(leaf_node_ids)
+        print(f"Found {total_leaves} leaf node IDs to scrape.")
         all_links = []
         
-        for i, node in enumerate(leaf_nodes):
+        # STAGE 2: Loop through the IDs and apply the "Find, Scroll, Click" pattern.
+        for i, node_id in enumerate(leaf_node_ids):
             try:
+                # STEP 1: FIND - Wait only for presence, not clickability.
+                node = wait.until(EC.presence_of_element_located((By.ID, node_id)))
+
+                # STEP 2: SCROLL - Use JavaScript to bring the element into view.
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", node)
+                # Add a tiny pause to ensure scrolling is complete before the next action.
+                time.sleep(0.2) 
+
+                # Now that it's in view, we can safely get its text.
                 title = node.text
                 print(f"  ({i+1}/{total_leaves}) Processing: {title}")
+                
+                # STEP 3: CLICK - Use the reliable JavaScript click.
                 driver.execute_script("arguments[0].click();", node)
+                
+                # Wait for the result of the click.
                 wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
                 
                 current_url = driver.current_url
@@ -162,7 +156,10 @@ def get_all_documentation_links(driver, base_url):
                     all_links.append(current_url)
 
             except Exception as e:
-                print(f"Could not process leaf node '{node.text if node else 'UNKNOWN'}'. Error: {e}")
+                # The error message now uses the ID, which is more reliable.
+                print(f"Could not process leaf node with ID '{node_id}'. Error: {e}")
+
+        # --- END OF THE CRITICAL FIX ---
 
         print(f"\nCollected {len(all_links)} unique documentation pages from '{SUBJECT_TO_SCRAPE}'.")
         return all_links
@@ -171,7 +168,7 @@ def get_all_documentation_links(driver, base_url):
         print(f"An unexpected error occurred during link extraction: {e}")
         traceback.print_exc()
         return []
-
+            
 def scrape_content_and_save(driver, links):
     """Visits each link from the provided list, scrapes its content, and saves it to a markdown file."""
     if not links:
