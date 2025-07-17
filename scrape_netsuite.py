@@ -126,10 +126,7 @@ def get_all_documentation_links(driver, base_url):
         
         for i, node_id in enumerate(leaf_node_ids):
             try:
-                # Find the element but don't fail immediately if it's not clickable
                 node = wait.until(EC.presence_of_element_located((By.ID, node_id)))
-                
-                # Check if the node has an onclick handler, which is a good sign it's a real link
                 if not node.get_attribute('onclick'):
                     print(f"  ({i+1}/{total_leaves}) Skipping '{node.text}' (not a clickable link).")
                     continue
@@ -154,7 +151,6 @@ def get_all_documentation_links(driver, base_url):
                 except:
                      print(f"  WARNING: Could not process node with ID '{node_id}'. Skipping. Error: {type(e).__name__}")
 
-
         print(f"\nCollected {len(all_links)} unique documentation pages from '{SUBJECT_TO_SCRAPE}'.")
         return all_links
 
@@ -163,12 +159,11 @@ def get_all_documentation_links(driver, base_url):
         traceback.print_exc()
         return []
 
-# --- FINAL VERSION WITH CSS RESET FOR CODE SNIPPETS ---
 def scrape_content_and_save(driver, links, subject_to_scrape):
     """
     Visits each link, extracts its clean HTML content, and appends it as a
     semantically distinct <article> to a single, well-structured HTML file.
-    Includes a CSS reset to fix code snippet rendering.
+    Includes a CSS reset to fix code snippet rendering and removes unwanted sections.
     """
     if not links:
         print("No links were found to scrape.")
@@ -241,7 +236,6 @@ def scrape_content_and_save(driver, links, subject_to_scrape):
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         from datetime import datetime
-        # Format the subject string to look like a breadcrumb trail
         subtitle_text = subject_to_scrape.replace('|', ' > ')
         f.write(html_header.format(
             now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -274,7 +268,9 @@ def scrape_content_and_save(driver, links, subject_to_scrape):
                     content_div = soup.find('div', class_='nshelp_content')
                 
                 if content_div:
-                    for element in content_div.find_all(id=["nshelp_footer", "helpcenter_feedback"], class_=["nshelp_navheader"]):
+                    # CORRECTED: Use a CSS selector to find and remove all unwanted elements
+                    unwanted_selector = "#nshelp_footer, #helpcenter_feedback, .nshelp_navheader, .nshelp_relatedtopics"
+                    for element in content_div.select(unwanted_selector):
                         element.decompose()
                     content_html = content_div.prettify()
                 else:
