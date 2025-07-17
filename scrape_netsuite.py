@@ -1,13 +1,11 @@
 import time
 import secret
-import re
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 import traceback
 
 # --- LOCATORS ---
@@ -164,58 +162,9 @@ def get_all_documentation_links(driver, base_url):
         print(f"An unexpected error occurred during link extraction: {e}")
         traceback.print_exc()
         return []
-                
 
-    """
-    Visits each link, scrapes its content, converts it to clean Markdown,
-    and saves it to a file. Gracefully handles pages without a navigation tree.
-    """
-    if not links:
-        print("No links were found to scrape.")
-        return
-
-    print(f"Starting to scrape and format {len(links)} pages...")
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        for i, link in enumerate(links):
-            print(f"Scraping ({i+1}/{len(links)}): {link}")
-            try:
-                driver.get(link)
-                content_div = WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.ID, 'helpcenter_content'))
-                )
-                soup = BeautifulSoup(content_div.get_attribute('outerHTML'), 'html.parser')
-
-                title_element = soup.find('h1', class_='nshelp_title')
-                title = title_element.get_text(strip=True) if title_element else "Untitled"
-                
-                # --- START OF THE CRITICAL FIX for NoSuchElementException ---
-                path_text = ""
-                try:
-                    # Try to find the navigation breadcrumbs, but don't fail if it's not there.
-                    nav_div = driver.find_element(By.ID, 'ns_navigation')
-                    path_text = nav_div.text.replace('\n', ' > ')
-                except NoSuchElementException:
-                    print("  (Info: No navigation breadcrumbs found on this page. Continuing without it.)")
-                # --- END OF THE CRITICAL FIX ---
-                
-                markdown_content = convert_html_to_markdown(soup)
-
-                f.write(f"# {title}\n\n")
-                f.write(f"**Source URL:** <{link}>\n\n")
-                if path_text:
-                    f.write(f"**Path:** `{path_text}`\n\n")
-                f.write(markdown_content)
-                f.write("\n\n---\n\n")
-            
-            except Exception as e:
-                print(f"  ERROR: Could not scrape page {link}. Error: {e}")
-                traceback.print_exc()
-                f.write(f"# Failed to scrape content from {link}\n\n---\n\n")
-                
-    print(f"Scraping complete. Formatted content saved to '{OUTPUT_FILE}'.")
-    
 # --- FINAL VERSION WITH CSS RESET FOR CODE SNIPPETS ---
-def scrape_content_and_save(driver, links):
+def scrape_content_and_save(driver, links, subject_to_scrape):
     """
     Visits each link, extracts its clean HTML content, and appends it as a
     semantically distinct <article> to a single, well-structured HTML file.
@@ -246,7 +195,8 @@ def scrape_content_and_save(driver, links):
         .content-snippet {{ margin-top: 20px; }}
 
         /* Typography */
-        h1 {{ color: #1a0dab; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+        h1 {{ color: #1a0dab; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 5px; }}
+        .page-subtitle {{ color: #555; font-weight: 400; font-size: 1.3rem; margin-top: 0; margin-bottom: 25px; }}
         
         /* Tables */
         table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
@@ -280,6 +230,7 @@ def scrape_content_and_save(driver, links):
 </head>
 <body>
     <h1>Scraped NetSuite Documentation</h1>
+    <h2 class="page-subtitle">{subtitle}</h2>
     <p>Generated on: {now}</p>
 """
 
@@ -290,7 +241,12 @@ def scrape_content_and_save(driver, links):
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         from datetime import datetime
-        f.write(html_header.format(now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        # Format the subject string to look like a breadcrumb trail
+        subtitle_text = subject_to_scrape.replace('|', ' > ')
+        f.write(html_header.format(
+            now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            subtitle=subtitle_text
+        ))
 
         for i, link in enumerate(links):
             print(f"Scraping ({i+1}/{len(links)}): {link}")
@@ -356,7 +312,7 @@ if __name__ == '__main__':
         doc_links = get_all_documentation_links(driver, base_url)
         
         if doc_links:
-            scrape_content_and_save(driver, doc_links)
+            scrape_content_and_save(driver, doc_links, SUBJECT_TO_SCRAPE)
             
     print("Closing browser.")
     driver.quit()
