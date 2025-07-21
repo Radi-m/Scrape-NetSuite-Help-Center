@@ -68,247 +68,164 @@ def login_and_get_session(driver):
         print(f"An unexpected error occurred during login: {e}")
         return False
 
-def get_all_documentation_links(driver, base_url):
+def get_all_leaf_node_ids(driver, wait):
     """
-    Traverses a path, expands all sub-nodes, and uses a robust "Find, Scroll, Click"
-    pattern to collect leaf node links, gracefully skipping non-clickable labels.
+    Navigates to the target, fully expands the tree, and returns a list of all leaf node IDs.
+    This function is run only ONCE.
     """
-    print(f"Navigating to Help Center: {HELP_CENTER_URL}")
+    print("--- Phase 1: Collecting all leaf node IDs ---")
     driver.get(HELP_CENTER_URL)
-    wait = WebDriverWait(driver, 10)
-
+    
+    # 1. Traverse Path
     path_parts = SUBJECT_TO_SCRAPE.split('|')
-    print(f"Starting traversal for path: {path_parts}")
-
-    try:
-        search_context = driver
-        for i, part in enumerate(path_parts):
-            print(f"  -> Traversing to: '{part}'")
-            node_text_span = wait.until(EC.visibility_of_element_located(
-                (By.XPATH, f".//span[@isfolder='1' and text()='{part}']")
-            ))
-            node_container = node_text_span.find_element(By.XPATH, "./ancestor::span[1]")
-            node_id = node_container.get_attribute('id')
+    print(f"Traversing to: {SUBJECT_TO_SCRAPE}")
+    search_context = driver
+    for part in path_parts:
+        node_text_span = wait.until(EC.visibility_of_element_located(
+            (By.XPATH, f".//span[@isfolder='1' and text()='{part}']")
+        ))
+        node_container = node_text_span.find_element(By.XPATH, "./ancestor::span[1]")
+        node_id = node_container.get_attribute('id')
+        try:
+            expand_img = node_container.find_element(By.XPATH, ".//img[contains(@id, '_ti')]")
+            if 'plus.png' in expand_img.get_attribute('src'):
+                driver.execute_script("arguments[0].click();", expand_img)
+                wait.until(EC.presence_of_element_located((By.ID, f"{node_id}_c")))
+        except NoSuchElementException: pass
+        search_context = node_container
+    
+    final_target_container = search_context
+    
+    # 2. Fully Expand Sub-Tree
+    print("Force-expanding entire sub-tree...")
+    attempts = 0
+    while attempts < 30: # Increased safety break
+        plus_icons = final_target_container.find_elements(By.XPATH, ".//img[contains(@src, 'plus.png')]")
+        if not plus_icons:
+            print("Expansion complete.")
+            break
+        
+        print(f"  Found {len(plus_icons)} more nodes to expand...")
+        for icon in list(plus_icons):
             try:
-                expand_img = node_container.find_element(By.XPATH, ".//img[contains(@id, '_ti')]")
-                if 'plus.png' in expand_img.get_attribute('src'): # type: ignore
-                    print(f"     Expanding '{part}'...")
-                    driver.execute_script("arguments[0].click();", expand_img)
-                    child_container_locator = (By.ID, f"{node_id}_c")
-                    wait.until(EC.presence_of_element_located(child_container_locator))
-                    print(f"     Expansion of '{part}' confirmed.")
-            except NoSuchElementException:
-                print(f"     '{part}' has no expand icon. Continuing.")
-            search_context = node_container
-            print(f"     Set new search context to element with ID: {node_id}")
-
-        print("\nTraversal complete. Force-expanding all nodes under the final target.")
-        final_target_container = search_context
-        while True:
-            plus_icons = final_target_container.find_elements(By.XPATH, ".//img[contains(@src, 'plus.png')]")
-            if not plus_icons:
-                print("Expansion of sub-tree is complete.")
-                break
-            print(f"Found {len(plus_icons)} more nodes to expand. Clicking first one...")
-            try:
-                driver.execute_script("arguments[0].click();", plus_icons[0])
-                time.sleep(0.5)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", icon)
+                driver.execute_script("arguments[0].click();", icon)
+                time.sleep(0.2) # Small pause for DOM update
             except StaleElementReferenceException:
-                print("Caught expected StaleElementReferenceException, re-scanning tree...")
-                continue
-        
-        print("Collecting all leaf node IDs from the target sub-tree...")
-        leaf_node_spans = final_target_container.find_elements(By.XPATH, ".//span[@isfolder='0']")
-        leaf_node_ids = [span.get_attribute('id') for span in leaf_node_spans if span.get_attribute('id')]
-        total_leaves = len(leaf_node_ids)
-        print(f"Found {total_leaves} leaf node IDs to process.")
-        all_links = []
-        
-        for i, node_id in enumerate(leaf_node_ids):
+                print("  (Stale element, re-scanning tree...)")
+                break # Re-scan from the top of the while loop
+        attempts += 1
+
+    # 3. Collect IDs
+    print("Collecting leaf node IDs...")
+    leaf_node_spans = final_target_container.find_elements(By.XPATH, ".//span[@isfolder='0']")
+    leaf_node_ids = [span.get_attribute('id') for span in leaf_node_spans if span.get_attribute('id')]
+    print(f"Found {len(leaf_node_ids)} total leaf nodes to process.")
+    return leaf_node_ids
+
+def scrape_single_page(driver, wait, node_id, file_handle):
+    """
+    Navigates to the help center, finds a specific node by ID, clicks it,
+    and scrapes its content. This is the "atomic" operation.
+    """
+    driver.get(HELP_CENTER_URL)
+    
+    # Find the node and its parents
+    try:
+        # We need to expand all parents of the target node
+        parts = node_id.replace('_tnidtitle', '').split('||')
+        current_path_id = ""
+        for i in range(len(parts) - 1):
+            current_path_id = "||".join(parts[:i+1])
+            parent_node = wait.until(EC.presence_of_element_located((By.ID, current_path_id)))
             try:
-                node = wait.until(EC.presence_of_element_located((By.ID, node_id))) # type: ignore
-                if not node.get_attribute('onclick'):
-                    print(f"  ({i+1}/{total_leaves}) Skipping '{node.text}' (not a clickable link).")
-                    continue
-                
-                title = node.text
-                print(f"  ({i+1}/{total_leaves}) Processing: {title}")
+                expand_img = parent_node.find_element(By.XPATH, f".//img[@id='{current_path_id}_ti']")
+                if 'plus.png' in expand_img.get_attribute('src'):
+                    driver.execute_script("arguments[0].click();", expand_img)
+                    wait.until(EC.presence_of_element_located((By.ID, f"{current_path_id}_c")))
+            except NoSuchElementException: pass
+            
+        # Now find the final target node
+        node = wait.until(EC.presence_of_element_located((By.ID, node_id)))
+        if not node.get_attribute('onclick'):
+            return # Skip non-clickable labels
 
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", node)
-                time.sleep(0.2)
-                
-                driver.execute_script("arguments[0].click();", node)
-                wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
-                
-                current_url = driver.current_url
-                if current_url not in all_links:
-                    all_links.append(current_url)
+        title = node.text
+        print(f"  Processing: {title}")
 
-            except Exception as e:
-                try:
-                    node_text = driver.find_element(By.ID, node_id).text
-                    print(f"  WARNING: Could not process node '{node_text}' with ID '{node_id}'. It might be a text label. Skipping. Error: {type(e).__name__}")
-                except:
-                     print(f"  WARNING: Could not process node with ID '{node_id}'. Skipping. Error: {type(e).__name__}")
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", node)
+        time.sleep(0.2)
+        driver.execute_script("arguments[0].click();", node)
+        
+        # Scrape content
+        content_wait = WebDriverWait(driver, 20)
+        content_div_element = content_wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
+        current_url = driver.current_url
+        soup = BeautifulSoup(content_div_element.get_attribute('outerHTML'), 'html.parser') # type: ignore
+        
+        path_text = ""
+        if soup.find(id='ns_navigation'):
+            path_text = soup.find(id='ns_navigation').get_text(separator=' > ', strip=True) # type: ignore
 
-        print(f"\nCollected {len(all_links)} unique documentation pages from '{SUBJECT_TO_SCRAPE}'.")
-        return all_links
+        content_html = ""
+        content_container = soup.find('div', class_='nshelp_page') or soup.find('div', class_='nshelp_content')
+        if content_container:
+            for el in content_container.find_all(id=["nshelp_footer", "helpcenter_feedback"], class_=["nshelp_navheader"]): # type: ignore
+                el.decompose()
+            content_html = content_container.prettify() # type: ignore
+        
+        # Assemble and write the <article> block
+        file_handle.write('<article class="scraped-page">\n')
+        file_handle.write(f'<h1>{title}</h1>\n')
+        file_handle.write('<div class="metadata">\n')
+        file_handle.write(f'<p><strong>Source URL:</strong> <a href="{current_url}" target="_blank">{current_url}</a></p>\n')
+        if path_text: file_handle.write(f'<p><strong>Path:</strong> <code>{path_text}</code></p>\n')
+        file_handle.write('</div>\n<hr>\n')
+        file_handle.write('<div class="content-snippet">\n')
+        file_handle.write(content_html)
+        file_handle.write('</div>\n</article>\n\n')
+        return True
 
     except Exception as e:
-        print(f"An unexpected error occurred during link extraction: {e}")
-        traceback.print_exc()
-        return []
+        print(f"  WARNING: Could not process node with ID '{node_id}'. Skipping. Error: {type(e).__name__}")
+        return False
 
-def scrape_content_and_save(driver, links, subject_to_scrape):
-    """
-    Visits each link, extracts its clean HTML content, and appends it as a
-    semantically distinct <article> to a single, well-structured HTML file.
-    Includes a CSS reset to fix code snippet rendering and removes unwanted sections.
-    """
-    if not links:
-        print("No links were found to scrape.")
-        return
 
-    print(f"Starting to build single HTML output from {len(links)} pages...")
-    
-    html_header = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NetSuite SuiteScript Documentation</title>
-    <style>
-        /* General Body Styles */
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }}
-        
-        /* Scraped Content Containers */
-        .scraped-page {{ border: 1px solid #ddd; border-radius: 8px; margin-bottom: 40px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
-        .scraped-page.error {{ border-color: #d9534f; background-color: #f2dede; }}
-        .metadata {{ background-color: #f7f7f7; border: 1px solid #eee; padding: 10px; margin-bottom: 20px; border-radius: 4px; }}
-        .metadata p {{ margin: 5px 0; }}
-        .content-snippet {{ margin-top: 20px; }}
-
-        /* Typography */
-        h1 {{ color: #1a0dab; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 5px; }}
-        .page-subtitle {{ color: #555; font-weight: 400; font-size: 1.3rem; margin-top: 0; margin-bottom: 25px; }}
-        
-        /* Tables */
-        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }}
-        th {{ background-color: #f2f2f2; }}
-
-        /* --- START OF THE FIX for Code Snippets --- */
-        /* General code styles */
-        code {{ font-family: "Courier New", Courier, monospace; }}
-
-        /* Style for <pre> blocks (the whole code box) */
-        pre, pre[class*="language-"] {{
-            background-color: #f5f2f0 !important; /* A light, readable background */
-            color: #333; /* Dark text for readability */
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 5px;
-            overflow-x: auto;
-            border: 1px solid #ddd;
-        }}
-
-        /* CSS Reset for SPANs inside code blocks */
-        /* This forces the syntax highlighting spans to inherit our desired text color */
-        pre[class*="language-"] span, pre code span {{
-            background: none !important; /* Remove any background color from tokens */
-            color: inherit !important; /* Make text color inherit from the <pre> tag */
-            text-shadow: none !important;
-        }}
-        /* --- END OF THE FIX --- */
-    </style>
-</head>
-<body>
-    <h1>Scraped NetSuite Documentation</h1>
-    <h2 class="page-subtitle">{subtitle}</h2>
-    <p>Generated on: {now}</p>
-"""
-
-    html_footer = """
-</body>
-</html>
-"""
-
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        from datetime import datetime
-        subtitle_text = subject_to_scrape.replace('|', ' > ')
-        f.write(html_header.format(
-            now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            subtitle=subtitle_text
-        ))
-
-        for i, link in enumerate(links):
-            print(f"Scraping ({i+1}/{len(links)}): {link}")
-            try:
-                driver.get(link)
-                wait = WebDriverWait(driver, 20)
-                wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
-                
-                soup = BeautifulSoup(driver.page_source, 'html.parser')
-
-                title_element = soup.find('h1', class_='nshelp_title')
-                title = title_element.get_text(strip=True) if title_element else "Untitled"
-                
-                path_text = ""
-                try:
-                    nav_div = soup.find(id='ns_navigation')
-                    if nav_div:
-                        path_text = nav_div.get_text(separator=' > ', strip=True)
-                except Exception:
-                    print("  (Info: No navigation breadcrumbs found.)")
-
-                content_html = ""
-                content_div = soup.find('div', class_='nshelp_page')
-                if not content_div:
-                    content_div = soup.find('div', class_='nshelp_content')
-                
-                if content_div:
-                    # CORRECTED: Use a CSS selector to find and remove all unwanted elements
-                    unwanted_selector = "#nshelp_footer, #helpcenter_feedback, .nshelp_navheader, .nshelp_relatedtopics"
-                    for element in content_div.select(unwanted_selector): # type: ignore
-                        element.decompose()
-                    content_html = content_div.prettify() # type: ignore
-                else:
-                    content_html = "<p>Error: Could not find main content div.</p>"
-
-                f.write('<article class="scraped-page">\n')
-                f.write(f'<h1>{title}</h1>\n')
-                f.write('<div class="metadata">\n')
-                f.write(f'<p><strong>Source URL:</strong> <a href="{link}" target="_blank">{link}</a></p>\n')
-                if path_text:
-                    f.write(f'<p><strong>Path:</strong> <code>{path_text}</code></p>\n')
-                f.write('</div>\n<hr>\n')
-                f.write('<div class="content-snippet">\n')
-                f.write(content_html) # type: ignore
-                f.write('</div>\n')
-                f.write('</article>\n\n')
-            
-            except Exception as e:
-                print(f"  ERROR: Could not process page {link}. Writing error to file.")
-                traceback.print_exc()
-                f.write(f'<article class="scraped-page error"><h1>Failed to scrape: {link}</h1><p>Error: {e}</p></article>\n')
-                
-        f.write(html_footer)
-
-    print(f"\nScraping complete. All content saved to '{OUTPUT_FILE}'")    
-        
 if __name__ == '__main__':
     service = webdriver.ChromeService(executable_path=DRIVER_PATH)
     driver = webdriver.Chrome(service=service)
-    
+    wait = WebDriverWait(driver, 10)
+
+    # HTML Boilerplate
+    html_header = """...""" # Keep your existing HTML header
+    html_footer = "</body>\n</html>"
+
     if login_and_get_session(driver):
-        current_url = driver.current_url
-        base_url = f"{current_url.split('/app/')[0]}"
+        try:
+            # Phase 1: Get all the target IDs once
+            all_ids = get_all_leaf_node_ids(driver, wait)
+            total_leaves = len(all_ids)
+
+            # Phase 2: Open the file and process each ID atomically
+            output_filename = OUTPUT_FILE.replace('.md', '.html')
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                from datetime import datetime
+                f.write(html_header.format(
+                    subject=SUBJECT_TO_SCRAPE,
+                    now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ))
+
+                print("\n--- Phase 2: Scraping each page individually ---")
+                for i, node_id in enumerate(all_ids):
+                    print(f"Scraping node ({i+1}/{total_leaves}) ID: {node_id}")
+                    scrape_single_page(driver, wait, node_id, f)
+                
+                f.write(html_footer)
+                print(f"\nScraping complete. All content saved to '{output_filename}'")
         
-        doc_links = get_all_documentation_links(driver, base_url)
-        
-        if doc_links:
-            scrape_content_and_save(driver, doc_links, SUBJECT_TO_SCRAPE)
-            
+        except Exception as e:
+            print(f"A fatal error occurred: {e}")
+            traceback.print_exc()
+
     print("Closing browser.")
     driver.quit()
