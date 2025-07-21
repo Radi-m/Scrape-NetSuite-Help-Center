@@ -1,12 +1,15 @@
 import time
 import secret
+import traceback
+from datetime import datetime
+from bs4 import BeautifulSoup
+from tqdm import tqdm  # <<< ADDED for progress bar
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
-from bs4 import BeautifulSoup
-import traceback
 
 # --- LOCATORS ---
 SECURITY_QUESTION_LABEL_LOCATOR = (By.XPATH, "//td[normalize-space()='Question:']/following-sibling::td")
@@ -75,7 +78,7 @@ def get_all_leaf_node_ids(driver, wait):
     """
     print("--- Phase 1: Collecting all leaf node IDs ---")
     driver.get(HELP_CENTER_URL)
-    
+
     # 1. Traverse Path
     path_parts = SUBJECT_TO_SCRAPE.split('|')
     print(f"Traversing to: {SUBJECT_TO_SCRAPE}")
@@ -93,27 +96,27 @@ def get_all_leaf_node_ids(driver, wait):
                 wait.until(EC.presence_of_element_located((By.ID, f"{node_id}_c")))
         except NoSuchElementException: pass
         search_context = node_container
-    
+
     final_target_container = search_context
-    
+
     # 2. Fully Expand Sub-Tree
     print("Force-expanding entire sub-tree...")
     attempts = 0
-    while attempts < 30: # Increased safety break
+    while attempts < 30:
         plus_icons = final_target_container.find_elements(By.XPATH, ".//img[contains(@src, 'plus.png')]")
         if not plus_icons:
             print("Expansion complete.")
             break
-        
+
         print(f"  Found {len(plus_icons)} more nodes to expand...")
         for icon in list(plus_icons):
             try:
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", icon)
                 driver.execute_script("arguments[0].click();", icon)
-                time.sleep(0.2) # Small pause for DOM update
+                time.sleep(0.2)
             except StaleElementReferenceException:
                 print("  (Stale element, re-scanning tree...)")
-                break # Re-scan from the top of the while loop
+                break
         attempts += 1
 
     # 3. Collect IDs
@@ -123,14 +126,13 @@ def get_all_leaf_node_ids(driver, wait):
     print(f"Found {len(leaf_node_ids)} total leaf nodes to process.")
     return leaf_node_ids
 
-def scrape_single_page(driver, wait, node_id, file_handle):
+def scrape_single_page(driver, wait, node_id, file_handle, progress_bar):
     """
     Navigates to the help center, finds a specific node by ID, clicks it,
     and scrapes its content. This is the "atomic" operation.
     """
     driver.get(HELP_CENTER_URL)
-    
-    # Find the node and its parents
+
     try:
         # We need to expand all parents of the target node
         parts = node_id.replace('_tnidtitle', '').split('||')
@@ -144,25 +146,26 @@ def scrape_single_page(driver, wait, node_id, file_handle):
                     driver.execute_script("arguments[0].click();", expand_img)
                     wait.until(EC.presence_of_element_located((By.ID, f"{current_path_id}_c")))
             except NoSuchElementException: pass
-            
+
         # Now find the final target node
         node = wait.until(EC.presence_of_element_located((By.ID, node_id)))
         if not node.get_attribute('onclick'):
-            return # Skip non-clickable labels
+            return
 
         title = node.text
-        print(f"  Processing: {title}")
+        # Update progress bar with the name of the current item
+        progress_bar.set_description(f"Processing: {title}")
 
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", node)
         time.sleep(0.2)
         driver.execute_script("arguments[0].click();", node)
-        
+
         # Scrape content
         content_wait = WebDriverWait(driver, 20)
         content_div_element = content_wait.until(EC.presence_of_element_located((By.ID, 'helpcenter_content')))
         current_url = driver.current_url
         soup = BeautifulSoup(content_div_element.get_attribute('outerHTML'), 'html.parser') # type: ignore
-        
+
         path_text = ""
         if soup.find(id='ns_navigation'):
             path_text = soup.find(id='ns_navigation').get_text(separator=' > ', strip=True) # type: ignore
@@ -170,10 +173,16 @@ def scrape_single_page(driver, wait, node_id, file_handle):
         content_html = ""
         content_container = soup.find('div', class_='nshelp_page') or soup.find('div', class_='nshelp_content')
         if content_container:
+            # First, remove unwanted elements like footers and feedback forms
             for el in content_container.find_all(id=["nshelp_footer", "helpcenter_feedback"], class_=["nshelp_navheader"]): # type: ignore
                 el.decompose()
+
+            # Find and remove all "Related Topics" divs
+            for related_topics_div in content_container.find_all('div', class_='nshelp_relatedtopics'): # type: ignore
+                related_topics_div.decompose()
+
             content_html = content_container.prettify() # type: ignore
-        
+
         # Assemble and write the <article> block
         file_handle.write('<article class="scraped-page">\n')
         file_handle.write(f'<h1>{title}</h1>\n')
@@ -187,13 +196,19 @@ def scrape_single_page(driver, wait, node_id, file_handle):
         return True
 
     except Exception as e:
+        # Update progress bar with warning message
+        progress_bar.set_description(f"WARNING on node {node_id}. Skipping.")
         print(f"  WARNING: Could not process node with ID '{node_id}'. Skipping. Error: {type(e).__name__}")
         return False
 
 
 if __name__ == '__main__':
+    from selenium.webdriver.chrome.options import Options
+    chrome_options = Options()
+    chrome_options.add_argument('--log-level=3') # Suppresses most console messages
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])    
     service = webdriver.ChromeService(executable_path=DRIVER_PATH)
-    driver = webdriver.Chrome(service=service)
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     wait = WebDriverWait(driver, 10)
 
     # HTML Boilerplate
@@ -209,20 +224,21 @@ if __name__ == '__main__':
             # Phase 2: Open the file and process each ID atomically
             output_filename = OUTPUT_FILE.replace('.md', '.html')
             with open(output_filename, 'w', encoding='utf-8') as f:
-                from datetime import datetime
                 f.write(html_header.format(
                     subject=SUBJECT_TO_SCRAPE,
                     now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ))
 
                 print("\n--- Phase 2: Scraping each page individually ---")
-                for i, node_id in enumerate(all_ids):
-                    print(f"Scraping node ({i+1}/{total_leaves}) ID: {node_id}")
-                    scrape_single_page(driver, wait, node_id, f)
-                
+                # Wrapped the main loop with tqdm for a progress bar
+                progress_bar = tqdm(all_ids, unit="page", desc="Starting scrape")
+                for node_id in progress_bar:
+                    # Pass the progress_bar object to the scraping function
+                    scrape_single_page(driver, wait, node_id, f, progress_bar)
+
                 f.write(html_footer)
                 print(f"\nScraping complete. All content saved to '{output_filename}'")
-        
+
         except Exception as e:
             print(f"A fatal error occurred: {e}")
             traceback.print_exc()
