@@ -22,7 +22,7 @@ DRIVER_PATH = './chromedriver.exe'
 
 # --- SCRAPE SUBJECT ---
 # Format: 'MainTitle|SubTitle' (e.g., 'SuiteCloud Platform|SuiteScript')
-SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x API Reference|SuiteScript 2.x Modules|N/action Module'
+SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x API Reference|SuiteScript 2.x Modules'
 
 def login_and_get_session(driver):
     """Logs into NetSuite, handling the security question page if it appears."""
@@ -91,7 +91,7 @@ def get_all_documentation_links(driver, base_url):
             node_id = node_container.get_attribute('id')
             try:
                 expand_img = node_container.find_element(By.XPATH, ".//img[contains(@id, '_ti')]")
-                if 'plus.png' in expand_img.get_attribute('src'):
+                if 'plus.png' in expand_img.get_attribute('src'): # type: ignore
                     print(f"     Expanding '{part}'...")
                     driver.execute_script("arguments[0].click();", expand_img)
                     child_container_locator = (By.ID, f"{node_id}_c")
@@ -126,7 +126,7 @@ def get_all_documentation_links(driver, base_url):
         
         for i, node_id in enumerate(leaf_node_ids):
             try:
-                node = wait.until(EC.presence_of_element_located((By.ID, node_id)))
+                node = wait.until(EC.presence_of_element_located((By.ID, node_id))) # type: ignore
                 if not node.get_attribute('onclick'):
                     print(f"  ({i+1}/{total_leaves}) Skipping '{node.text}' (not a clickable link).")
                     continue
@@ -270,9 +270,9 @@ def scrape_content_and_save(driver, links, subject_to_scrape):
                 if content_div:
                     # CORRECTED: Use a CSS selector to find and remove all unwanted elements
                     unwanted_selector = "#nshelp_footer, #helpcenter_feedback, .nshelp_navheader, .nshelp_relatedtopics"
-                    for element in content_div.select(unwanted_selector):
+                    for element in content_div.select(unwanted_selector): # type: ignore
                         element.decompose()
-                    content_html = content_div.prettify()
+                    content_html = content_div.prettify() # type: ignore
                 else:
                     content_html = "<p>Error: Could not find main content div.</p>"
 
@@ -284,7 +284,7 @@ def scrape_content_and_save(driver, links, subject_to_scrape):
                     f.write(f'<p><strong>Path:</strong> <code>{path_text}</code></p>\n')
                 f.write('</div>\n<hr>\n')
                 f.write('<div class="content-snippet">\n')
-                f.write(content_html)
+                f.write(content_html) # type: ignore
                 f.write('</div>\n')
                 f.write('</article>\n\n')
             
