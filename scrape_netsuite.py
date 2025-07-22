@@ -3,7 +3,7 @@ import secret
 import traceback
 from datetime import datetime
 from bs4 import BeautifulSoup
-from tqdm import tqdm  # <<< ADDED for progress bar
+from tqdm import tqdm
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -90,7 +90,7 @@ def get_all_leaf_node_ids(driver, wait):
         node_container = node_text_span.find_element(By.XPATH, "./ancestor::span[1]")
         node_id = node_container.get_attribute('id')
         try:
-            expand_img = node_container.find_element(By.XPATH, ".//img[contains(@id, '_ti')]")
+            expand_img = node_container.find_element(By.XPATH, f".//img[contains(@id, '{node_id}_ti')]")
             if 'plus.png' in expand_img.get_attribute('src'):
                 driver.execute_script("arguments[0].click();", expand_img)
                 wait.until(EC.presence_of_element_located((By.ID, f"{node_id}_c")))
@@ -111,6 +111,7 @@ def get_all_leaf_node_ids(driver, wait):
         print(f"  Found {len(plus_icons)} more nodes to expand...")
         for icon in list(plus_icons):
             try:
+                # --- FIX: Changed {{...}} to {...} ---
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", icon)
                 driver.execute_script("arguments[0].click();", icon)
                 time.sleep(0.2)
@@ -181,6 +182,10 @@ def scrape_single_page(driver, wait, node_id, file_handle, progress_bar):
             for related_topics_div in content_container.find_all('div', class_='nshelp_relatedtopics'): # type: ignore
                 related_topics_div.decompose()
 
+            # Find and remove all "Important" divs
+            for important_div in content_container.find_all('div', class_='nshelp_imp'): # type: ignore
+                important_div.decompose()
+
             content_html = content_container.prettify() # type: ignore
 
         # Assemble and write the <article> block
@@ -211,8 +216,61 @@ if __name__ == '__main__':
     driver = webdriver.Chrome(service=service, options=chrome_options)
     wait = WebDriverWait(driver, 10)
 
-    # HTML Boilerplate
-    html_header = """...""" # Keep your existing HTML header
+    # HTML Boilerplate with improved styling
+    html_header = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetSuite SuiteScript Documentation</title>
+    <style>
+        /* General Body Styles */
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }}
+        
+        /* Scraped Content Containers */
+        .scraped-page {{ border: 1px solid #ddd; border-radius: 8px; margin-bottom: 40px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+        .scraped-page.error {{ border-color: #d9534f; background-color: #f2dede; }}
+        .metadata {{ background-color: #f7f7f7; border: 1px solid #eee; padding: 10px; margin-bottom: 20px; border-radius: 4px; }}
+        .metadata p {{ margin: 5px 0; }}
+        .content-snippet {{ margin-top: 20px; }}
+
+        /* Typography */
+        h1 {{ color: #1a0dab; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 5px; }}
+        .page-subtitle {{ color: #555; font-weight: 400; font-size: 1.3rem; margin-top: 0; margin-bottom: 25px; }}
+        
+        /* Tables */
+        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }}
+        th {{ background-color: #f2f2f2; }}
+
+        /* General code styles */
+        code {{ font-family: "Courier New", Courier, monospace; }}
+
+        /* Style for <pre> blocks (the whole code box) */
+        pre, pre[class*="language-"] {{
+            background-color: #f5f2f0 !important; /* A light, readable background */
+            color: #333; /* Dark text for readability */
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            overflow-x: auto;
+            border: 1px solid #ddd;
+        }}
+
+        /* CSS Reset for SPANs inside code blocks */
+        pre[class*="language-"] span, pre code span {{
+            background: none !important; /* Remove any background color from tokens */
+            color: inherit !important; /* Make text color inherit from the <pre> tag */
+            text-shadow: none !important;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Scraped NetSuite Documentation</h1>
+    <h2 class="page-subtitle">{subject}</h2>
+    <p>Generated on: {now}</p>
+"""
     html_footer = "</body>\n</html>"
 
     if login_and_get_session(driver):
@@ -222,18 +280,16 @@ if __name__ == '__main__':
             total_leaves = len(all_ids)
 
             # Phase 2: Open the file and process each ID atomically
-            output_filename = OUTPUT_FILE.replace('.md', '.html')
+            output_filename = OUTPUT_FILE
             with open(output_filename, 'w', encoding='utf-8') as f:
                 f.write(html_header.format(
-                    subject=SUBJECT_TO_SCRAPE,
+                    subject=SUBJECT_TO_SCRAPE.replace('|', ' > '),
                     now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ))
 
                 print("\n--- Phase 2: Scraping each page individually ---")
-                # Wrapped the main loop with tqdm for a progress bar
                 progress_bar = tqdm(all_ids, unit="page", desc="Starting scrape")
                 for node_id in progress_bar:
-                    # Pass the progress_bar object to the scraping function
                     scrape_single_page(driver, wait, node_id, f, progress_bar)
 
                 f.write(html_footer)
