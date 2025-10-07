@@ -16,21 +16,115 @@ SECURITY_QUESTION_LABEL_LOCATOR = (By.XPATH, "//td[normalize-space()='Question:'
 SECURITY_ANSWER_INPUT_LOCATOR = (By.NAME, 'answer')
 SECURITY_SUBMIT_BUTTON_LOCATOR = (By.NAME, 'submitter')
 
-# --- SCRIPT CONFIGURATION ---
-NETSUITE_LOGIN_PAGE = 'https://system.netsuite.com/pages/customerlogin.jsp'
-HELP_CENTER_URL = 'https://5025918-sb1.app.netsuite.com/app/help/helpcenter.nl'
-
-OUTPUT_FILE = 'netsuite_suitescript_docs.html'
+OUTPUT_FILE = 'SuiteScript 2.x.html'
 DRIVER_PATH = './chromedriver.exe'
+
+# Toggle to also generate a Markdown version of the scraped content.
+# When True, a .md file (same basename as OUTPUT_FILE) will be produced.
+GENERATE_MD = True
 
 # --- SCRAPE SUBJECT ---
 # Format: 'MainTitle|SubTitle' (e.g., 'SuiteCloud Platform|SuiteScript')
-SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x API Reference|SuiteScript 2.x Modules'
+SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x'
+
+# --- MARKDOWN CONVERSION (lightweight) ---
+def _html_to_markdown(html: str) -> str:
+    """Convert a subset of HTML produced by the Help Center into Markdown.
+
+    This is intentionally lightweight to avoid adding external dependencies.
+    If you need fuller fidelity, consider installing a library such as
+    `markdownify` and replacing this function's implementation.
+    """
+    soup = BeautifulSoup(html, 'html.parser')  # type: ignore
+
+    lines: list[str] = []
+
+    def handle(el, depth=0):  # recursive
+        name = getattr(el, 'name', None)
+        if name is None:  # NavigableString
+            text = str(el)
+            if text.strip():
+                lines.append(text)
+            return
+
+        # Heading tags
+        if name in [f'h{i}' for i in range(1, 7)]:
+            level = int(name[1])
+            heading_text = el.get_text(strip=True)
+            if heading_text:
+                lines.append('#' * level + ' ' + heading_text)
+                lines.append('')
+            return
+
+        if name == 'p':
+            para = el.get_text(' ', strip=True)
+            if para:
+                lines.append(para)
+                lines.append('')
+            return
+
+        if name == 'pre':
+            code_text = el.get_text('', strip=False)
+            lines.append('```')
+            lines.append(code_text.rstrip())
+            lines.append('```')
+            lines.append('')
+            return
+
+        if name == 'code' and el.parent and el.parent.name != 'pre':
+            code_inline = el.get_text(strip=True)
+            if code_inline:
+                lines.append(f'`{code_inline}`')
+            return
+
+        if name in ('ul', 'ol'):
+            for idx, li in enumerate([c for c in el.children if getattr(c, 'name', None) == 'li']):
+                bullet = f"{idx+1}." if name == 'ol' else '*'
+                li_text = li.get_text(' ', strip=True)
+                if li_text:
+                    lines.append(('  ' * depth) + f"{bullet} {li_text}")
+            lines.append('')
+            return
+
+        if name == 'table':
+            rows = el.find_all('tr', recursive=False)
+            if rows:
+                header_cells = rows[0].find_all(['th', 'td'])
+                headers = [c.get_text(' ', strip=True) for c in header_cells]
+                if headers:
+                    lines.append('| ' + ' | '.join(headers) + ' |')
+                    lines.append('| ' + ' | '.join(['---'] * len(headers)) + ' |')
+                    for r in rows[1:]:
+                        cells = r.find_all(['td', 'th'])
+                        row_vals = [c.get_text(' ', strip=True) for c in cells]
+                        lines.append('| ' + ' | '.join(row_vals) + ' |')
+                    lines.append('')
+            return
+
+        # Generic container: recurse into children
+        for child in el.children:
+            handle(child, depth=depth + (1 if name in ('ul', 'ol') else 0))
+
+    for child in soup.children:
+        handle(child)
+
+    # Collapse excessive blank lines
+    cleaned = []
+    prev_blank = False
+    for ln in lines:
+        if ln.strip() == '':
+            if not prev_blank:
+                cleaned.append('')
+            prev_blank = True
+        else:
+            cleaned.append(ln.rstrip())
+            prev_blank = False
+    return '\n'.join(cleaned).strip() + '\n'
 
 def login_and_get_session(driver):
     """Logs into NetSuite, handling the security question page if it appears."""
-    print(f"Navigating to login page: {NETSUITE_LOGIN_PAGE}")
-    driver.get(NETSUITE_LOGIN_PAGE)
+    print(f"Navigating to login page: {secret.NETSUITE_LOGIN_PAGE}")
+    driver.get(secret.NETSUITE_LOGIN_PAGE)
     wait = WebDriverWait(driver, 30)
     try:
         wait.until(EC.presence_of_element_located((By.ID, 'email'))).send_keys(secret.EMAIL)
@@ -77,7 +171,7 @@ def get_all_leaf_node_ids(driver, wait):
     This function is run only ONCE.
     """
     print("--- Phase 1: Collecting all leaf node IDs ---")
-    driver.get(HELP_CENTER_URL)
+    driver.get(secret.HELP_CENTER_URL)
 
     # 1. Traverse Path
     path_parts = SUBJECT_TO_SCRAPE.split('|')
@@ -127,12 +221,12 @@ def get_all_leaf_node_ids(driver, wait):
     print(f"Found {len(leaf_node_ids)} total leaf nodes to process.")
     return leaf_node_ids
 
-def scrape_single_page(driver, wait, node_id, file_handle, progress_bar):
+def scrape_single_page(driver, wait, node_id, file_handle, progress_bar, md_handle=None):
     """
     Navigates to the help center, finds a specific node by ID, clicks it,
     and scrapes its content. This is the "atomic" operation.
     """
-    driver.get(HELP_CENTER_URL)
+    driver.get(secret.HELP_CENTER_URL)
 
     try:
         # We need to expand all parents of the target node
@@ -198,6 +292,16 @@ def scrape_single_page(driver, wait, node_id, file_handle, progress_bar):
         file_handle.write('<div class="content-snippet">\n')
         file_handle.write(content_html)
         file_handle.write('</div>\n</article>\n\n')
+
+        # --- Markdown output (optional) ---
+        if md_handle is not None:
+            md_handle.write(f"# {title}\n\n")
+            md_handle.write(f"**Source URL:** {current_url}\n\n")
+            if path_text:
+                md_handle.write(f"**Path:** `{path_text}`\n\n")
+            if content_html:
+                md_handle.write(_html_to_markdown(str(content_html)))
+            md_handle.write('\n---\n\n')
         return True
 
     except Exception as e:
@@ -289,11 +393,25 @@ if __name__ == '__main__':
 
                 print("\n--- Phase 2: Scraping each page individually ---")
                 progress_bar = tqdm(all_ids, unit="page", desc="Starting scrape")
+
+                md_output_filename = None
+                md_handle = None
+                if GENERATE_MD:
+                    base_no_ext = OUTPUT_FILE.rsplit('.', 1)[0]
+                    md_output_filename = base_no_ext + '.md'
+                    md_handle = open(md_output_filename, 'w', encoding='utf-8')
+                    md_handle.write(f"# Scraped NetSuite Documentation\n\n")
+                    md_handle.write(f"## {SUBJECT_TO_SCRAPE.replace('|', ' > ')}\n\n")
+                    md_handle.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    md_handle.write('---\n\n')
+
                 for node_id in progress_bar:
-                    scrape_single_page(driver, wait, node_id, f, progress_bar)
+                    scrape_single_page(driver, wait, node_id, f, progress_bar, md_handle=md_handle)
 
                 f.write(html_footer)
-                print(f"\nScraping complete. All content saved to '{output_filename}'")
+                if md_handle:
+                    md_handle.close()
+                print(f"\nScraping complete. HTML saved to '{output_filename}'" + (f" and Markdown saved to '{md_output_filename}'" if md_output_filename else ''))
 
         except Exception as e:
             print(f"A fatal error occurred: {e}")

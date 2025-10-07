@@ -9,12 +9,12 @@ This Python script uses Selenium to automate logging into a NetSuite account, na
 -   **Security Question Handling:** Automatically detects and answers security questions if they appear during login.
 -   **Targeted Scraping:** You can specify the exact documentation path you want to scrape (e.g., `SuiteCloud Platform|SuiteScript|SuiteScript 2.x API Reference`).
 -   **Recursive Tree Expansion:** Intelligently expands all nested topics within your target section to find every single documentation page.
--   **Single HTML Output:** Combines all scraped pages into one `netsuite_suitescript_docs.html` file.
+-   **Multi-Format Output:** Combines all scraped pages into one styled HTML file and (optionally) a Markdown `.md` file for easy text searching and version control diffing.
 -   **Clean & Styled Content:**
     -   Removes unnecessary elements like headers, footers, and feedback forms.
     -   Applies clean, readable CSS for a better user experience.
     -   **Includes a crucial CSS fix** to ensure code snippets are rendered correctly, which is often a problem with web scraping.
--   **Offline Access:** Once generated, the HTML file provides fast, offline access to the documentation you need.
+-   **Offline Access:** Once generated, the HTML (and optional Markdown) file provides fast, offline access to the documentation you need.
 
 ## Prerequisites
 
@@ -109,7 +109,9 @@ Before you begin, ensure you have the following installed:
 
 3.  **View the Output**
 
-    Once the script is finished, an HTML file named `netsuite_suitescript_docs.html` will be created in the project directory. Open this file in any web browser to view the scraped documentation.
+    Once the script is finished, an HTML file (default: the value of `OUTPUT_FILE`) will be created in the project directory. If `GENERATE_MD = True`, a Markdown file with the same base name will also be produced (e.g. `SuiteScript 2.x.md`).
+
+    Open the HTML file in any browser, or open the Markdown file in your editor / Markdown viewer.
 
 ## Customization
 
@@ -117,6 +119,27 @@ You can modify the following constants at the top of `scrape_netsuite.py` to cha
 
 -   `OUTPUT_FILE`: Change the name of the final generated HTML file.
 -   `DRIVER_PATH`: If you placed `chromedriver.exe` somewhere other than the root directory, update this path.
+-   `GENERATE_MD` (default: `True`): Set to `False` if you do not want the Markdown file.
+
+### Markdown Output Details
+
+The Markdown file is produced by a lightweight, dependency-free converter that preserves common structural elements:
+
+Supported:
+
+* Headings (h1–h6)
+* Paragraphs
+* Code blocks (`<pre>`)
+* Inline code (`<code>`)
+* Ordered & unordered lists
+* Basic tables (rendered as pipe tables)
+
+Removed / Skipped:
+
+* Feedback widgets, related topics, nav headers, footers
+* Some visual-only container styling
+
+If you require higher-fidelity Markdown, you can replace the helper function `_html_to_markdown` with a library such as `markdownify` or `html2text` and add it to your dependencies.
 
 ## Disclaimer
 

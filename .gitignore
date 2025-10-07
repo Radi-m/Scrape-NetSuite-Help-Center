@@ -12,4 +12,4 @@ __pycache__/
 *.swp
 *.tmp
 *.json
-netsuite_suitescript_docs.html
+*.html
