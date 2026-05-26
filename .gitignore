@@ -13,3 +13,5 @@ __pycache__/
 *.tmp
 *.json
 *.html
+/out
+/venv

@@ -16,7 +16,7 @@ SECURITY_QUESTION_LABEL_LOCATOR = (By.XPATH, "//td[normalize-space()='Question:'
 SECURITY_ANSWER_INPUT_LOCATOR = (By.NAME, 'answer')
 SECURITY_SUBMIT_BUTTON_LOCATOR = (By.NAME, 'submitter')
 
-OUTPUT_FILE = 'SuiteScript 2.x.html'
+OUTPUT_FILE = './out/Order Management.html'
 DRIVER_PATH = './chromedriver.exe'
 
 # Toggle to also generate a Markdown version of the scraped content.
@@ -25,7 +25,7 @@ GENERATE_MD = True
 
 # --- SCRAPE SUBJECT ---
 # Format: 'MainTitle|SubTitle' (e.g., 'SuiteCloud Platform|SuiteScript')
-SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x'
+SUBJECT_TO_SCRAPE = 'Order Management'
 
 # --- MARKDOWN CONVERSION (lightweight) ---
 def _html_to_markdown(html: str) -> str:
@@ -316,8 +316,7 @@ if __name__ == '__main__':
     chrome_options = Options()
     chrome_options.add_argument('--log-level=3') # Suppresses most console messages
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])    
-    service = webdriver.ChromeService(executable_path=DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(options=chrome_options)
     wait = WebDriverWait(driver, 10)
 
     # HTML Boilerplate with improved styling
