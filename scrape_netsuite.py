@@ -16,7 +16,7 @@ SECURITY_QUESTION_LABEL_LOCATOR = (By.XPATH, "//td[normalize-space()='Question:'
 SECURITY_ANSWER_INPUT_LOCATOR = (By.NAME, 'answer')
 SECURITY_SUBMIT_BUTTON_LOCATOR = (By.NAME, 'submitter')
 
-OUTPUT_FILE = './out/SuiteApps.html'
+OUTPUT_FILE = './out/LLM.html'
 DRIVER_PATH = './chromedriver.exe'
 
 # Toggle to also generate a Markdown version of the scraped content.
@@ -25,7 +25,7 @@ GENERATE_MD = True
 
 # --- SCRAPE SUBJECT ---
 # Format: 'MainTitle|SubTitle' (e.g., 'SuiteCloud Platform|SuiteScript')
-SUBJECT_TO_SCRAPE = 'SuiteApps'
+SUBJECT_TO_SCRAPE = 'SuiteCloud Platform|SuiteScript|SuiteScript 2.x API Reference|SuiteScript 2.1 Modules|N/llm Module'
 
 # --- MARKDOWN CONVERSION (lightweight) ---
 def _html_to_markdown(html: str) -> str:
